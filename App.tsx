@@ -108,7 +108,7 @@ const CURRENCY_KEY = 'royal-inventory-currency';
 
 const CURRENCY_RATES: Record<string, number> = {
   USD: 1,
-  PKR: 283.5,
+  PKR: 280.35,
   AED: 3.67,
   EUR: 0.86
 };
