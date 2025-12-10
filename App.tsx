@@ -106,6 +106,31 @@ declare global {
 const STORAGE_KEY = 'royal-inventory-data';
 const CURRENCY_KEY = 'royal-inventory-currency';
 
+const CURRENCY_RATES: Record<string, number> = {
+  USD: 1,
+  PKR: 283.5,
+  AED: 3.67,
+  EUR: 0.86
+};
+
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: '$',
+  PKR: '₨',
+  AED: 'د.إ',
+  EUR: '€'
+};
+
+const convertFromUSD = (amountUSD: number, currency: string) => {
+  const rate = CURRENCY_RATES[currency] ?? 1;
+  return amountUSD * rate;
+};
+
+const formatPrice = (amountUSD: number, currency: string) => {
+  const symbol = CURRENCY_SYMBOLS[currency] ?? currency;
+  const converted = convertFromUSD(amountUSD, currency);
+  return `${symbol}${converted.toFixed(2)}`;
+};
+
 // --- Product Form Component ---
 const ProductForm: React.FC<{
   isOpen: boolean;
@@ -389,7 +414,7 @@ const Analytics: React.FC<{ products: Product[]; currency: string }> = ({ produc
 
   const valueData = products.map(p => ({
     name: p.name,
-    value: p.subProducts.reduce((sum, sp) => sum + (sp.quantity * sp.price), 0)
+    value: p.subProducts.reduce((sum, sp) => sum + convertFromUSD(sp.quantity * sp.price, currency), 0)
   }));
 
   return (
@@ -882,12 +907,16 @@ const App: React.FC = () => {
 
             <div className="flex items-center gap-2 bg-neutral-800 rounded-lg p-1 px-2 border border-neutral-700">
               <span className="text-xs font-semibold text-yellow-600">CUR</span>
-              <input 
-                className="w-12 bg-transparent text-sm font-bold text-yellow-500 text-center outline-none"
+              <select
+                className="bg-transparent text-sm font-bold text-yellow-500 outline-none border-none focus:ring-0 px-1"
                 value={currency}
                 onChange={e => setCurrency(e.target.value)}
-                placeholder="$"
-              />
+              >
+                <option className="bg-neutral-900 text-slate-200" value="PKR">PKR</option>
+                <option className="bg-neutral-900 text-slate-200" value="USD">USD</option>
+                <option className="bg-neutral-900 text-slate-200" value="AED">AED</option>
+                <option className="bg-neutral-900 text-slate-200" value="EUR">EUR</option>
+              </select>
             </div>
 
             <div className="flex items-center gap-2">
@@ -990,7 +1019,7 @@ const App: React.FC = () => {
                       </div>
                       <p className="text-slate-400 mb-4">{product.description}</p>
                       <div className="flex flex-wrap items-center gap-4 text-sm text-slate-300">
-                        <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Base: <strong className="text-yellow-500">{currency}{product.basePrice}</strong></span>
+                        <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Base: <strong className="text-yellow-500">{formatPrice(product.basePrice, currency)}</strong></span>
                         <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Stock: <strong>{product.subProducts.reduce((a,b) => a + b.quantity, 0)}</strong></span>
                         <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Alert: <strong>{product.alertLimit}</strong></span>
                       </div>
@@ -1069,7 +1098,7 @@ const App: React.FC = () => {
                                   </div>
                                 </td>
                                 <td className="px-6 py-4 text-slate-500 font-mono text-xs">{sp.sku}</td>
-                                <td className="px-6 py-4 text-yellow-500">{currency}{sp.price}</td>
+                                <td className="px-6 py-4 text-yellow-500">{formatPrice(sp.price, currency)}</td>
                                 <td className="px-6 py-4">
                                   <span className={`px-2 py-0.5 rounded text-xs font-bold ${sp.quantity <= product.alertLimit ? 'bg-red-900/30 text-red-500' : 'bg-green-900/30 text-green-500'}`}>
                                     {sp.quantity}
