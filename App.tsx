@@ -5,8 +5,8 @@ import SubProductForm from './components/SubProductForm';
 import Analytics from './components/Analytics';
 import { processInventoryCommand } from './services/geminiService';
 import { 
-  Plus, Search, Mic, Download, LayoutDashboard, Package, 
-  ChevronDown, ChevronRight, AlertTriangle, Edit, Trash2, MicOff, Mail, CheckCircle, Save, Crown, FileJson, RefreshCw, Upload
+  Plus, Search, Mic, Download, 
+  ChevronDown, ChevronRight, AlertTriangle, Edit, Trash2, MicOff, Mail, Save, Crown, FileJson, RefreshCw, Upload, Loader2
 } from 'lucide-react';
 
 // --- Type Definitions for Web Speech API ---
@@ -52,63 +52,67 @@ const STORAGE_KEY = 'ai-inventory-data';
 const BACKUP_KEY = 'ai-inventory-data-backup';
 const SAFETY_BACKUP_KEY = 'ai-inventory-safety-backup';
 const CURRENCY_STORAGE_KEY = 'ai-inventory-currency';
+const MANUAL_CLEAR_KEY = 'ai-inventory-manual-clear';
+
+// --- IndexedDB Helpers ---
+const DB_NAME = 'RoyalInventoryDB';
+const STORE_NAME = 'inventory';
+const DB_VERSION = 1;
+
+const openDB = (): Promise<IDBDatabase> => {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (event) => {
+            const db = (event.target as IDBOpenDBRequest).result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME);
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+};
+
+const saveToDB = async (data: Product[]) => {
+    try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.put(data, 'root');
+        return true;
+    } catch (e) {
+        console.error("IndexedDB Save Error:", e);
+        return false;
+    }
+};
+
+const loadFromDB = async (): Promise<Product[] | null> => {
+    try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.get('root');
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => reject(request.error);
+        });
+    } catch (e) {
+        console.error("IndexedDB Load Error:", e);
+        return null;
+    }
+};
+// -------------------------
 
 const App: React.FC = () => {
-  // Initialize currency from localStorage
+  // Initialize currency from localStorage (Lightweight)
   const [currency, setCurrency] = useState(() => localStorage.getItem(CURRENCY_STORAGE_KEY) || '$');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   
-  // Track if user explicitly cleared data to distinguish from accidental wipe
-  const [isManuallyCleared, setIsManuallyCleared] = useState(false);
+  // Track if user explicitly cleared data
+  const [isManuallyCleared, setIsManuallyCleared] = useState(() => localStorage.getItem(MANUAL_CLEAR_KEY) === 'true');
 
-  // Initialize products from localStorage (Lazy Initialization with Backup Recovery)
-  const [products, setProducts] = useState<Product[]>(() => {
-    let saved = localStorage.getItem(STORAGE_KEY);
-    
-    // IMMEDIATE SAFETY BACKUP ON BOOT
-    if (saved) {
-      localStorage.setItem(SAFETY_BACKUP_KEY, saved);
-    }
-
-    // Fallback to backup if primary is missing
-    if (!saved) {
-        console.warn("Primary storage empty, checking backup...");
-        saved = localStorage.getItem(BACKUP_KEY);
-    }
-
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-        return [];
-      } catch (e) {
-        console.error("Failed to load data, attempting backup recovery", e);
-        const backup = localStorage.getItem(BACKUP_KEY);
-        if (backup) {
-            try { return JSON.parse(backup); } catch (e2) { console.error("Backup also corrupt", e2); }
-        }
-        return [];
-      }
-    } else {
-      // Demo Data only if BOTH storages are empty
-      return [
-        {
-          id: '1',
-          name: 'Royal Velvet Sofa',
-          category: 'Furniture',
-          description: 'Premium black velvet sofa with gold trim.',
-          basePrice: 1200,
-          image: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&q=80&w=400',
-          remarks: 'Flagship product',
-          alertLimit: 5,
-          subProducts: [
-            { id: '1-1', sku: 'RVS-BLK-3S', name: 'Royal Velvet Sofa (Midnight)', description: '3-Seater midnight black', color: 'Midnight Black', price: 1200, quantity: 12, weight: '45kg', dimensions: '200x90x85cm', image: 'https://images.unsplash.com/photo-1550226891-ef816aed4a98?auto=format&fit=crop&q=80&w=200', remarks: '' },
-            { id: '1-2', sku: 'RVS-GLD-3S', name: '', description: '', color: 'Royal Gold', price: 1350, quantity: 4, weight: '45kg', dimensions: '200x90x85cm', image: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&q=80&w=200', remarks: '' }
-          ]
-        }
-      ];
-    }
-  });
+  const [products, setProducts] = useState<Product[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   const [activeTab, setActiveTab] = useState<'inventory' | 'analytics'>('inventory');
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -134,43 +138,118 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Save Data & Check Alerts
+  // --- DATA LOADING (Migration & Recovery) ---
   useEffect(() => {
-    // Prevent overwriting storage on initial load/render
-    if (isFirstRender.current) {
-        isFirstRender.current = false;
+    const initData = async () => {
+        try {
+            // 1. Try Loading from IndexedDB (Primary Robust Storage)
+            const dbData = await loadFromDB();
+            
+            if (dbData && Array.isArray(dbData)) {
+                console.log("Loaded data from IndexedDB");
+                setProducts(dbData);
+            } else {
+                // 2. Fallback/Migration: Check LocalStorage (Old Storage)
+                console.warn("IndexedDB empty, checking LocalStorage...");
+                const localSaved = localStorage.getItem(STORAGE_KEY);
+                const backupSaved = localStorage.getItem(BACKUP_KEY);
+                const safetySaved = localStorage.getItem(SAFETY_BACKUP_KEY);
+                
+                const dataToMigrate = localSaved || backupSaved || safetySaved;
+
+                if (dataToMigrate) {
+                    try {
+                        const parsed = JSON.parse(dataToMigrate);
+                        if (Array.isArray(parsed)) {
+                            console.log("Migrating data from LocalStorage to IndexedDB...");
+                            setProducts(parsed);
+                            // Immediate Save to DB to complete migration
+                            await saveToDB(parsed);
+                        } else {
+                            throw new Error("Invalid format");
+                        }
+                    } catch (e) {
+                        console.error("Migration failed, corrupted data.");
+                        loadDemoData();
+                    }
+                } else {
+                    // 3. No data anywhere -> Load Demo
+                    loadDemoData();
+                }
+            }
+        } catch (err) {
+            console.error("Initialization Error:", err);
+            loadDemoData();
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const loadDemoData = () => {
+        setProducts([
+            {
+              id: '1',
+              name: 'Royal Velvet Sofa',
+              category: 'Furniture',
+              description: 'Premium black velvet sofa with gold trim.',
+              basePrice: 1200,
+              image: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&q=80&w=400',
+              remarks: 'Flagship product',
+              alertLimit: 5,
+              subProducts: [
+                { id: '1-1', sku: 'RVS-BLK-3S', name: 'Royal Velvet Sofa (Midnight)', description: '3-Seater midnight black', color: 'Midnight Black', price: 1200, quantity: 12, weight: '45kg', dimensions: '200x90x85cm', image: 'https://images.unsplash.com/photo-1550226891-ef816aed4a98?auto=format&fit=crop&q=80&w=200', remarks: '' },
+                { id: '1-2', sku: 'RVS-GLD-3S', name: '', description: '', color: 'Royal Gold', price: 1350, quantity: 4, weight: '45kg', dimensions: '200x90x85cm', image: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&q=80&w=200', remarks: '' }
+              ]
+            }
+        ]);
+    };
+
+    initData();
+  }, []);
+
+  // --- DATA SAVING ---
+  useEffect(() => {
+    // Skip saving if still loading or first render
+    if (isLoading || isFirstRender.current) {
+        if (!isLoading) isFirstRender.current = false;
         return;
     }
 
     // WRITE PROTECTION GUARD
-    // If state is empty but user didn't manually clear it, assume it's a glitch and DO NOT save.
+    // If state is empty but user didn't manually clear it, skip save.
     if (products.length === 0 && !isManuallyCleared) {
-        const existingData = localStorage.getItem(STORAGE_KEY);
-        if (existingData && existingData.length > 50) {
-            console.warn("Safety Guard: Prevented overwriting existing data with empty state.");
-            return; 
-        }
+        return; 
     }
 
-    try {
-        const json = JSON.stringify(products);
-        localStorage.setItem(STORAGE_KEY, json);
-        localStorage.setItem(BACKUP_KEY, json); // Redundant backup
+    const saveData = async () => {
+        // Save to IndexedDB
+        await saveToDB(products);
+        
+        // Update Last Saved Timestamp
         setLastSaved(new Date());
-    } catch (e) {
-        console.error("Storage failed", e);
-        if (e instanceof DOMException && e.name === "QuotaExceededError") {
-            alert("Storage full! Your images might be too large. Please delete some items or use smaller images.");
+
+        // Update Safety Backup in LocalStorage (string limit applies here, but DB is safe)
+        // We try to keep a JSON backup in LS if it fits, otherwise DB is the source of truth.
+        try {
+            const json = JSON.stringify(products);
+            if (json.length < 4500000) { // ~4.5MB limit check
+                localStorage.setItem(BACKUP_KEY, json);
+            }
+        } catch (e) {
+            // Ignore LS quota errors, DB handles it.
         }
-    }
+    };
+
+    saveData();
     
+    // Check Alerts
     const newAlerts: Alert[] = [];
     products.forEach(p => {
       p.subProducts.forEach(sp => {
         if (sp.quantity <= p.alertLimit) {
           newAlerts.push({
             id: `${p.id}-${sp.id}`,
-            productName: sp.name || p.name, // Use variant name if available
+            productName: sp.name || p.name, 
             sku: sp.sku,
             currentQuantity: sp.quantity,
             limit: p.alertLimit,
@@ -180,12 +259,18 @@ const App: React.FC = () => {
       });
     });
     setAlerts(newAlerts);
-  }, [products, isManuallyCleared]);
 
-  // Persist Currency
+  }, [products, isManuallyCleared, isLoading]);
+
+  // Persist Currency & Clear Flag
   useEffect(() => {
     localStorage.setItem(CURRENCY_STORAGE_KEY, currency);
   }, [currency]);
+
+  useEffect(() => {
+    localStorage.setItem(MANUAL_CLEAR_KEY, String(isManuallyCleared));
+  }, [isManuallyCleared]);
+
 
   // Voice Setup
   useEffect(() => {
@@ -216,7 +301,7 @@ const App: React.FC = () => {
       
       recognitionRef.current = recognition;
     }
-  }, []); 
+  }, [products]); // Re-bind when products change to have context
 
   const handleVoiceCommand = async (transcript: string) => {
     const context = products.map(p => `${p.name} (${p.category})`).join(', ');
@@ -322,14 +407,13 @@ const App: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const handleManualSave = () => {
-    try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
-        localStorage.setItem(BACKUP_KEY, JSON.stringify(products));
+  const handleManualSave = async () => {
+    const success = await saveToDB(products);
+    if (success) {
         setLastSaved(new Date());
-        alert("Inventory successfully saved to local storage!");
-    } catch (e) {
-        alert("Failed to save. Storage might be full.");
+        alert("Inventory successfully saved to Secure Database!");
+    } else {
+        alert("Save failed. Please export a backup immediately.");
     }
   };
 
@@ -352,7 +436,7 @@ const App: React.FC = () => {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const content = e.target?.result as string;
         let parsedData = JSON.parse(content);
@@ -397,12 +481,12 @@ const App: React.FC = () => {
             setExpandedProducts(new Set()); 
             setProducts(sanitizedData);
             
-            // Force immediate save
-            try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizedData));
-                alert("Inventory restored successfully!");
-            } catch (storageError) {
-                alert("Restored to view, but failed to save to disk.");
+            // Force immediate save to DB
+            const saved = await saveToDB(sanitizedData);
+            if (saved) {
+                alert("Inventory restored and saved to database successfully!");
+            } else {
+                alert("Restored to view, but database save failed. Please keep this window open.");
             }
         }
       } catch (err) {
@@ -414,18 +498,20 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
 
-  const restoreFromSafety = () => {
-    if(window.confirm("This will overwrite current data with the Safety Backup (created at the start of this session). Continue?")) {
-        const safety = localStorage.getItem(SAFETY_BACKUP_KEY);
+  const restoreFromSafety = async () => {
+    if(window.confirm("Try to restore from Local Backup? (Use this if Database is empty)")) {
+        const safety = localStorage.getItem(BACKUP_KEY) || localStorage.getItem(SAFETY_BACKUP_KEY);
         if (safety) {
             try {
-                setProducts(JSON.parse(safety));
-                alert("Restored from safety backup successfully.");
+                const parsed = JSON.parse(safety);
+                setProducts(parsed);
+                await saveToDB(parsed);
+                alert("Restored from local backup successfully.");
             } catch(e) {
-                alert("Safety backup corrupted.");
+                alert("Local backup corrupted.");
             }
         } else {
-            alert("No safety backup found.");
+            alert("No local backup found.");
         }
     }
   };
@@ -479,8 +565,11 @@ const App: React.FC = () => {
   const deleteProduct = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (window.confirm("Delete this product and all variations?")) {
-        setIsManuallyCleared(true); 
-        setProducts(prev => prev.filter(p => p.id !== id));
+        setProducts(prev => {
+            const newState = prev.filter(p => p.id !== id);
+            if (newState.length === 0) setIsManuallyCleared(true);
+            return newState;
+        });
     }
   };
 
@@ -501,6 +590,18 @@ const App: React.FC = () => {
       (sp.name || "").toLowerCase().includes(searchTerm.toLowerCase())
     )
   );
+
+  if (isLoading) {
+      return (
+          <div className="min-h-screen bg-neutral-950 flex items-center justify-center">
+              <div className="text-center space-y-4">
+                  <Loader2 className="w-12 h-12 text-yellow-500 animate-spin mx-auto" />
+                  <h2 className="text-xl font-bold text-yellow-500 serif-font">Loading Royal Inventory...</h2>
+                  <p className="text-slate-400">Restoring data from secure database</p>
+              </div>
+          </div>
+      );
+  }
 
   return (
     <div className="min-h-screen pb-20 bg-neutral-950 text-slate-200 font-sans">
