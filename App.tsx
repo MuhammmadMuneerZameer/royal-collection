@@ -1,10 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
+
 import { 
   Plus, Search, Mic, Download, 
   ChevronDown, ChevronRight, AlertTriangle, Edit, Trash2, MicOff, Mail, Save, Crown, FileJson, RefreshCw, Upload, Loader2,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell, X, Image as ImageIcon
+  X, Image as ImageIcon
 } from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer,
+  PieChart, Pie, Cell
+} from 'recharts';
+import { processInventoryCommand } from './services/geminiService';
 
 // --- Type Definitions ---
 interface SubProduct {
@@ -471,6 +476,122 @@ const App: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const buildInventoryContextSummary = () => {
+    if (products.length === 0) return 'No products in inventory yet.';
+    return products.map(p => {
+      const variantsSummary = p.subProducts
+        .map(sp => `${sp.sku} (${sp.color}) qty ${sp.quantity}`)
+        .join(', ');
+      return `${p.name} [${p.category}] -> ${variantsSummary}`;
+    }).join(' | ');
+  };
+
+  const applyInventoryAction = (action: any) => {
+    if (!action || !action.type) return;
+
+    if (action.type === 'CREATE_PRODUCT') {
+      const data = action.data || {};
+      const productName = action.productName || data.name || 'Untitled Product';
+      setProducts(prev => {
+        const existing = prev.find(p => p.name.toLowerCase() === productName.toLowerCase());
+        const baseProduct: Product = existing || {
+          id: crypto.randomUUID(),
+          name: productName,
+          category: data.category || 'General',
+          description: data.description || '',
+          basePrice: typeof data.basePrice === 'number' ? data.basePrice : 0,
+          image: 'https://images.unsplash.com/photo-1556228453-efd6c1ff04f6?auto=format&fit=crop&q=80&w=400',
+          remarks: data.remarks || '',
+          alertLimit: typeof data.alertLimit === 'number' ? data.alertLimit : 10,
+          subProducts: existing ? existing.subProducts : []
+        };
+
+        let subProducts = baseProduct.subProducts;
+        if (typeof data.price === 'number' || typeof data.quantity === 'number') {
+          const newSub: SubProduct = {
+            id: crypto.randomUUID(),
+            sku: data.sku || action.sku || `SKU-${Math.floor(Math.random() * 10000)}`,
+            name: data.name,
+            description: data.description,
+            color: data.color || action.color || 'Default',
+            price: typeof data.price === 'number' ? data.price : baseProduct.basePrice,
+            quantity: typeof data.quantity === 'number' ? data.quantity : 0,
+            weight: data.weight || '0.5kg',
+            dimensions: data.dimensions || '10x10x2cm',
+            image: baseProduct.image,
+            remarks: data.remarks || ''
+          };
+          subProducts = [...subProducts, newSub];
+        }
+
+        const updated = { ...baseProduct, subProducts };
+        if (existing) {
+          return prev.map(p => p.id === existing.id ? updated : p);
+        }
+        return [...prev, updated];
+      });
+      if (action.reason) alert(action.reason);
+      return;
+    }
+
+    if (action.type === 'ADD_SUB_PRODUCT') {
+      const data = action.data || {};
+      const productName = (action.productName || '').toLowerCase();
+      setProducts(prev => prev.map(p => {
+        if (p.name.toLowerCase() !== productName) return p;
+        const newSub: SubProduct = {
+          id: crypto.randomUUID(),
+          sku: data.sku || action.sku || `SKU-${Math.floor(Math.random() * 10000)}`,
+          name: data.name,
+          description: data.description,
+          color: data.color || action.color || 'Default',
+          price: typeof data.price === 'number' ? data.price : p.basePrice,
+          quantity: typeof data.quantity === 'number' ? data.quantity : 0,
+          weight: data.weight || '0.5kg',
+          dimensions: data.dimensions || '10x10x2cm',
+          image: p.image,
+          remarks: data.remarks || ''
+        };
+        return { ...p, subProducts: [...p.subProducts, newSub] };
+      }));
+      if (action.reason) alert(action.reason);
+      return;
+    }
+
+    if (action.type === 'UPDATE_STOCK') {
+      const change = typeof action.quantityChange === 'number' ? action.quantityChange : 0;
+      if (!change) return;
+      const targetSku = action.sku ? String(action.sku).toLowerCase() : undefined;
+      const targetProductName = action.productName ? String(action.productName).toLowerCase() : undefined;
+      const targetColor = action.color ? String(action.color).toLowerCase() : undefined;
+
+      let matched = false;
+      setProducts(prev => prev.map(p => {
+        const matchesProduct = targetProductName && p.name.toLowerCase() === targetProductName;
+        const updatedSubs = p.subProducts.map(sp => {
+          const bySku = targetSku && sp.sku.toLowerCase() === targetSku;
+          const byProductAndColor = matchesProduct && targetColor && sp.color.toLowerCase().includes(targetColor);
+          if (bySku || byProductAndColor) {
+            matched = true;
+            return { ...sp, quantity: Math.max(0, sp.quantity + change) };
+          }
+          return sp;
+        });
+        return { ...p, subProducts: updatedSubs };
+      }));
+      if (!matched) {
+        alert('AI could not find a matching item for this command.');
+      } else if (action.reason) {
+        alert(action.reason);
+      }
+      return;
+    }
+
+    if (action.type === 'UNKNOWN' && action.reason) {
+      alert(action.reason);
+    }
+  };
+
   // Load data
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -546,41 +667,20 @@ const App: React.FC = () => {
     }
   }, [products]);
 
-  const handleVoiceCommand = (transcript: string) => {
-    const lower = transcript.toLowerCase();
-    
-    // Simple command parsing
-    if (lower.includes('add') && (lower.includes('stock') || lower.includes('quantity'))) {
-      const match = lower.match(/(\d+)/);
-      if (match) {
-        const qty = parseInt(match[1]);
-        if (products.length > 0 && products[0].subProducts.length > 0) {
-          setProducts(prev => {
-            const updated = [...prev];
-            updated[0].subProducts[0].quantity += qty;
-            return updated;
-          });
-          alert(`Added ${qty} units to ${products[0].subProducts[0].sku}`);
-        }
-      }
-    } else if (lower.includes('remove') || lower.includes('subtract')) {
-      const match = lower.match(/(\d+)/);
-      if (match) {
-        const qty = parseInt(match[1]);
-        if (products.length > 0 && products[0].subProducts.length > 0) {
-          setProducts(prev => {
-            const updated = [...prev];
-            updated[0].subProducts[0].quantity = Math.max(0, updated[0].subProducts[0].quantity - qty);
-            return updated;
-          });
-          alert(`Removed ${qty} units from ${products[0].subProducts[0].sku}`);
-        }
-      }
-    } else {
-      alert(`Command received: "${transcript}". Try: "Add 10 stock" or "Remove 5"`);
+  const handleVoiceCommand = async (transcript: string) => {
+    try {
+      setVoiceStatus('Understanding command...');
+      const context = buildInventoryContextSummary();
+      const action = await processInventoryCommand(transcript, context);
+      applyInventoryAction(action);
+      setVoiceStatus(action?.reason || 'Command processed');
+    } catch (error) {
+      console.error('Voice command error', error);
+      setVoiceStatus('Failed to process command');
+      alert('Sorry, there was a problem understanding that command.');
+    } finally {
+      setTimeout(() => setVoiceStatus(''), 1500);
     }
-    
-    setVoiceStatus("");
   };
 
   const toggleListening = () => {
@@ -1028,3 +1128,6 @@ const App: React.FC = () => {
       />
     </div>
   );
+};
+
+export default App;
