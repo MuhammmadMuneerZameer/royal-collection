@@ -2,7 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { InventoryAction, ActionType } from "../types";
 
 // Initialize Gemini Client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: "AIzaSyCQaE-ODqCiTeQIkMPgljYNjf3PqyAHSj8" });
 
 export const processInventoryCommand = async (
   transcript: string, 
