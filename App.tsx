@@ -1,15 +1,72 @@
 import React, { useState, useEffect, useRef } from 'react';
+
 import { 
   Plus, Search, Mic, Download, 
-  ChevronDown, ChevronRight, AlertTriangle, Edit, Trash2, MicOff, Mail, FileJson, Upload, Loader2, X
+  ChevronDown, ChevronRight, AlertTriangle, Edit, Trash2, MicOff, Mail, Save, Crown, FileJson, RefreshCw, Upload, Loader2,
+  X, Image as ImageIcon
 } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer,
+  PieChart, Pie, Cell
+} from 'recharts';
 import { processInventoryCommand } from './services/geminiService';
-import { Product, SubProduct, Alert, ActionType, InventoryAction } from './types';
 
-// --- Storage Keys ---
-const STORAGE_KEY = 'royal-inventory-data';
-const CURRENCY_KEY = 'royal-inventory-currency';
+// Persistent storage keys
+const STORAGE_KEY = 'royal_collection_storage_v1';
+const CURRENCY_KEY = 'royal_collection_currency';
+
+// --- Type Definitions ---
+interface SubProduct {
+  id: string;
+  sku: string;
+  name?: string;
+  description?: string;
+  color: string;
+  price: number;
+  quantity: number;
+  weight: string;
+  dimensions: string;
+  image: string;
+  remarks: string;
+}
+
+interface Product {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  basePrice: number;
+  image: string;
+  remarks: string;
+  alertLimit: number;
+  subProducts: SubProduct[];
+}
+
+interface Alert {
+  id: string;
+  productName: string;
+  sku: string;
+  currentQuantity: number;
+  limit: number;
+  timestamp: number;
+}
+
+enum ActionType {
+  CREATE_PRODUCT = 'CREATE_PRODUCT',
+  ADD_SUB_PRODUCT = 'ADD_SUB_PRODUCT',
+  UPDATE_STOCK = 'UPDATE_STOCK',
+  UNKNOWN = 'UNKNOWN'
+}
+
+interface InventoryAction {
+  type: ActionType;
+  productName?: string;
+  sku?: string;
+  color?: string;
+  data?: any;
+  quantityChange?: number;
+  reason?: string;
+}
 
 // --- Speech Recognition Types ---
 interface SpeechRecognitionResult {
@@ -19,19 +76,7 @@ interface SpeechRecognitionResult {
 interface SpeechRecognitionResultList {
   [index: number]: {
     [index: number]: SpeechRecognitionResult;
-    };
-  
-    // Minimal UI return to complete the App component and avoid syntax errors.
-    // Replace this placeholder with the real app JSX if more UI exists below.
-    return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold text-yellow-500">Royal Inventory</h1>
-        <p className="text-slate-400 mt-2">Manage products and variants from the app.</p>
-      </div>
-    );
   };
-  
-  export default App;
 }
 
 interface SpeechRecognitionEvent extends Event {
@@ -420,6 +465,122 @@ const App: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const buildInventoryContextSummary = () => {
+    if (products.length === 0) return 'No products in inventory yet.';
+    return products.map(p => {
+      const variantsSummary = p.subProducts
+        .map(sp => `${sp.sku} (${sp.color}) qty ${sp.quantity}`)
+        .join(', ');
+      return `${p.name} [${p.category}] -> ${variantsSummary}`;
+    }).join(' | ');
+  };
+
+  const applyInventoryAction = (action: any) => {
+    if (!action || !action.type) return;
+
+    if (action.type === 'CREATE_PRODUCT') {
+      const data = action.data || {};
+      const productName = action.productName || data.name || 'Untitled Product';
+      setProducts(prev => {
+        const existing = prev.find(p => p.name.toLowerCase() === productName.toLowerCase());
+        const baseProduct: Product = existing || {
+          id: crypto.randomUUID(),
+          name: productName,
+          category: data.category || 'General',
+          description: data.description || '',
+          basePrice: typeof data.basePrice === 'number' ? data.basePrice : 0,
+          image: 'https://images.unsplash.com/photo-1556228453-efd6c1ff04f6?auto=format&fit=crop&q=80&w=400',
+          remarks: data.remarks || '',
+          alertLimit: typeof data.alertLimit === 'number' ? data.alertLimit : 10,
+          subProducts: existing ? existing.subProducts : []
+        };
+
+        let subProducts = baseProduct.subProducts;
+        if (typeof data.price === 'number' || typeof data.quantity === 'number') {
+          const newSub: SubProduct = {
+            id: crypto.randomUUID(),
+            sku: data.sku || action.sku || `SKU-${Math.floor(Math.random() * 10000)}`,
+            name: data.name,
+            description: data.description,
+            color: data.color || action.color || 'Default',
+            price: typeof data.price === 'number' ? data.price : baseProduct.basePrice,
+            quantity: typeof data.quantity === 'number' ? data.quantity : 0,
+            weight: data.weight || '0.5kg',
+            dimensions: data.dimensions || '10x10x2cm',
+            image: baseProduct.image,
+            remarks: data.remarks || ''
+          };
+          subProducts = [...subProducts, newSub];
+        }
+
+        const updated = { ...baseProduct, subProducts };
+        if (existing) {
+          return prev.map(p => p.id === existing.id ? updated : p);
+        }
+        return [...prev, updated];
+      });
+      if (action.reason) alert(action.reason);
+      return;
+    }
+
+    if (action.type === 'ADD_SUB_PRODUCT') {
+      const data = action.data || {};
+      const productName = (action.productName || '').toLowerCase();
+      setProducts(prev => prev.map(p => {
+        if (p.name.toLowerCase() !== productName) return p;
+        const newSub: SubProduct = {
+          id: crypto.randomUUID(),
+          sku: data.sku || action.sku || `SKU-${Math.floor(Math.random() * 10000)}`,
+          name: data.name,
+          description: data.description,
+          color: data.color || action.color || 'Default',
+          price: typeof data.price === 'number' ? data.price : p.basePrice,
+          quantity: typeof data.quantity === 'number' ? data.quantity : 0,
+          weight: data.weight || '0.5kg',
+          dimensions: data.dimensions || '10x10x2cm',
+          image: p.image,
+          remarks: data.remarks || ''
+        };
+        return { ...p, subProducts: [...p.subProducts, newSub] };
+      }));
+      if (action.reason) alert(action.reason);
+      return;
+    }
+
+    if (action.type === 'UPDATE_STOCK') {
+      const change = typeof action.quantityChange === 'number' ? action.quantityChange : 0;
+      if (!change) return;
+      const targetSku = action.sku ? String(action.sku).toLowerCase() : undefined;
+      const targetProductName = action.productName ? String(action.productName).toLowerCase() : undefined;
+      const targetColor = action.color ? String(action.color).toLowerCase() : undefined;
+
+      let matched = false;
+      setProducts(prev => prev.map(p => {
+        const matchesProduct = targetProductName && p.name.toLowerCase() === targetProductName;
+        const updatedSubs = p.subProducts.map(sp => {
+          const bySku = targetSku && sp.sku.toLowerCase() === targetSku;
+          const byProductAndColor = matchesProduct && targetColor && sp.color.toLowerCase().includes(targetColor);
+          if (bySku || byProductAndColor) {
+            matched = true;
+            return { ...sp, quantity: Math.max(0, sp.quantity + change) };
+          }
+          return sp;
+        });
+        return { ...p, subProducts: updatedSubs };
+      }));
+      if (!matched) {
+        alert('AI could not find a matching item for this command.');
+      } else if (action.reason) {
+        alert(action.reason);
+      }
+      return;
+    }
+
+    if (action.type === 'UNKNOWN' && action.reason) {
+      alert(action.reason);
+    }
+  };
+
   // Load data
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -497,122 +658,17 @@ const App: React.FC = () => {
 
   const handleVoiceCommand = async (transcript: string) => {
     try {
-      // Create context summary for AI
-      const contextSummary = products.map(p => `${p.name} (${p.category})`).join(', ');
-      
-      // Process with AI
-      const action: InventoryAction = await processInventoryCommand(transcript, contextSummary);
-      
-      setVoiceStatus(action.reason || "Processing...");
-      
-      // Execute the action
-      switch (action.type) {
-        case ActionType.CREATE_PRODUCT:
-          if (action.data) {
-            const newProduct: Product = {
-              id: crypto.randomUUID(),
-              name: action.data.name || action.productName || 'New Product',
-              category: action.data.category || 'General',
-              description: action.data.description || '',
-              basePrice: action.data.basePrice || 0,
-              image: 'https://images.unsplash.com/photo-1556228453-efd6c1ff04f6?auto=format&fit=crop&q=80&w=400',
-              remarks: action.data.remarks || '',
-              alertLimit: action.data.alertLimit || 10,
-              subProducts: []
-            };
-            setProducts(prev => [...prev, newProduct]);
-            setTimeout(() => {
-              alert(`✅ Created: ${newProduct.name}`);
-              setVoiceStatus('');
-            }, 500);
-          }
-          break;
-          
-        case ActionType.ADD_SUB_PRODUCT:
-          if (action.productName && action.data) {
-            const targetProduct = products.find(p => 
-              p.name.toLowerCase().includes(action.productName!.toLowerCase())
-            );
-            
-            if (targetProduct) {
-              const newSub: SubProduct = {
-                id: crypto.randomUUID(),
-                sku: action.sku || `SKU-${Math.floor(Math.random() * 10000)}`,
-                name: action.data.name || '',
-                description: action.data.description || '',
-                color: action.color || action.data.color || 'Default',
-                price: action.data.price || targetProduct.basePrice,
-                quantity: action.data.quantity || 0,
-                weight: action.data.weight || '0.5kg',
-                dimensions: action.data.dimensions || '10x10x2cm',
-                image: 'https://images.unsplash.com/photo-1618220179428-22790b461013?auto=format&fit=crop&q=80&w=200',
-                remarks: action.data.remarks || ''
-              };
-              
-              setProducts(prev => prev.map(p => 
-                p.id === targetProduct.id 
-                  ? { ...p, subProducts: [...p.subProducts, newSub] }
-                  : p
-              ));
-              
-              setTimeout(() => {
-                alert(`✅ Added variant "${newSub.name || newSub.color}" to ${targetProduct.name}`);
-                setVoiceStatus('');
-              }, 500);
-            } else {
-              alert(`❌ Product "${action.productName}" not found`);
-              setVoiceStatus('');
-            }
-          }
-          break;
-          
-        case ActionType.UPDATE_STOCK:
-          if (action.quantityChange !== undefined) {
-            let updated = false;
-            
-            setProducts(prev => prev.map(p => {
-              // Try to match by product name
-              if (action.productName && p.name.toLowerCase().includes(action.productName.toLowerCase())) {
-                return {
-                  ...p,
-                  subProducts: p.subProducts.map(sp => {
-                    // Try SKU first, then color
-                    if ((action.sku && sp.sku === action.sku) || 
-                        (action.color && sp.color.toLowerCase() === action.color.toLowerCase()) ||
-                        (!action.sku && !action.color && p.subProducts.length === 1)) {
-                      updated = true;
-                      return {
-                        ...sp,
-                        quantity: Math.max(0, sp.quantity + action.quantityChange!)
-                      };
-                    }
-                    return sp;
-                  })
-                };
-              }
-              return p;
-            }));
-            
-            setTimeout(() => {
-              if (updated) {
-                alert(`✅ Stock updated: ${action.quantityChange > 0 ? 'Added' : 'Removed'} ${Math.abs(action.quantityChange)} units`);
-              } else {
-                alert(`❌ Item not found`);
-              }
-              setVoiceStatus('');
-            }, 500);
-          }
-          break;
-          
-        default:
-          alert(`❓ ${action.reason || "Command not understood. Try: 'Add 10 stock to SKU-1234' or 'Create a new chair product'"}`);
-          setVoiceStatus('');
-      }
-      
+      setVoiceStatus('Understanding command...');
+      const context = buildInventoryContextSummary();
+      const action = await processInventoryCommand(transcript, context);
+      applyInventoryAction(action);
+      setVoiceStatus(action?.reason || 'Command processed');
     } catch (error) {
-      console.error('Voice command error:', error);
-      alert('❌ Failed to process command');
-      setVoiceStatus('');
+      console.error('Voice command error', error);
+      setVoiceStatus('Failed to process command');
+      alert('Sorry, there was a problem understanding that command.');
+    } finally {
+      setTimeout(() => setVoiceStatus(''), 1500);
     }
   };
 
@@ -621,6 +677,25 @@ const App: React.FC = () => {
       recognitionRef.current?.stop();
     } else {
       recognitionRef.current?.start();
+    }
+  };
+
+  const handleBackup = () => {
+    try {
+      const dataStr = JSON.stringify(products, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `royal_inventory_backup_${Date.now()}.json`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      alert('Backup downloaded successfully.');
+    } catch (err) {
+      console.error('Backup error', err);
+      alert('Failed to create backup.');
     }
   };
 
@@ -663,6 +738,418 @@ const App: React.FC = () => {
     link.setAttribute('download', `royal_inventory_export_${Date.now()}.csv`);
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const content = e.target?.result as string;
+        const parsed = JSON.parse(content);
+        if (Array.isArray(parsed)) {
+          setProducts(parsed);
+          alert('Inventory restored successfully!');
+        }
+      } catch (err) {
+        alert('Error parsing file');
+      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  const handleNotify = () => {
+    if (alerts.length === 0) {
+      alert("No alerts");
+      return;
+    }
+    const subject = encodeURIComponent("Low Stock Alert");
+    const body = encodeURIComponent(
+      alerts.map(a => `${a.productName} (${a.sku}): ${a.currentQuantity} left`).join('\n')
+    );
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  };
+
+  const toggleExpand = (id: string) => {
+    const next = new Set(expandedProducts);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setExpandedProducts(next);
+  };
+
+  const saveProduct = (product: Product) => {
+    setProducts(prev => {
+      const exists = prev.some(p => p.id === product.id);
+      if (exists) {
+        return prev.map(p => p.id === product.id ? product : p);
+      } else {
+        return [...prev, product];
+      }
+    });
+  };
+
+  const saveSubProduct = (sub: SubProduct) => {
+    if (!activeParentId) return;
+    setProducts(prev => prev.map(p => {
+      if (p.id === activeParentId) {
+        const exists = p.subProducts.some(s => s.id === sub.id);
+        const subs = exists 
+          ? p.subProducts.map(s => s.id === sub.id ? sub : s)
+          : [...p.subProducts, sub];
+        return { ...p, subProducts: subs };
+      }
+      return p;
+    }));
+  };
+
+  const deleteProduct = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm("Delete this product?")) {
+      setProducts(prev => prev.filter(p => p.id !== id));
+    }
+  };
+
+  const deleteSubProduct = (pId: string, sId: string) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id === pId) {
+        return { ...p, subProducts: p.subProducts.filter(s => s.id !== sId) };
+      }
+      return p;
+    }));
+  };
+
+  const updateSubProductField = (productId: string, subProductId: string, field: 'name' | 'description', value: string) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id === productId) {
+        return {
+          ...p,
+          subProducts: p.subProducts.map(sp => 
+            sp.id === subProductId ? { ...sp, [field]: value } : sp
+          )
+        };
+      }
+      return p;
+    }));
+  };
+
+  // Auto-expand when searching
+  useEffect(() => {
+    if (searchTerm) {
+      const matchingIds = products
+        .filter(p => 
+          p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+          p.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          p.subProducts.some(sp => 
+            sp.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (sp.name || "").toLowerCase().includes(searchTerm.toLowerCase())
+          )
+        )
+        .map(p => p.id);
+      setExpandedProducts(new Set(matchingIds));
+    }
+  }, [searchTerm, products]);
+
+  const filteredProducts = products.filter(p => 
+    p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    p.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    p.subProducts.some(sp => 
+      sp.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (sp.name || "").toLowerCase().includes(searchTerm.toLowerCase())
+    )
+  );
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-neutral-950 flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <Loader2 className="w-12 h-12 text-yellow-500 animate-spin mx-auto" />
+          <h2 className="text-xl font-bold text-yellow-500">Loading...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pb-20 bg-neutral-950 text-slate-200">
+      <header className="sticky top-0 z-30 bg-neutral-900 border-b border-yellow-600/30 shadow-lg">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-gradient-to-br from-yellow-400 to-yellow-700 shadow-md">
+              <Crown className="text-black w-7 h-7" />
+            </div>
+            <div className="flex flex-col">
+              <h1 className="text-2xl font-bold text-yellow-500 tracking-wider">ROYAL COLLECTION</h1>
+              <span className="text-xs text-yellow-600/80 tracking-[0.2em] uppercase">Inventory System</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <nav className="hidden md:flex space-x-1 bg-neutral-800/50 p-1 rounded-lg border border-neutral-700">
+              <button 
+                onClick={() => setActiveTab('inventory')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === 'inventory' ? 'bg-yellow-600 text-black' : 'text-slate-400 hover:text-yellow-500'}`}
+              >
+                Inventory
+              </button>
+              <button 
+                onClick={() => setActiveTab('analytics')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === 'analytics' ? 'bg-yellow-600 text-black' : 'text-slate-400 hover:text-yellow-500'}`}
+              >
+                Analytics
+              </button>
+            </nav>
+
+            <div className="flex items-center gap-2 bg-neutral-800 rounded-lg p-1 px-2 border border-neutral-700">
+              <span className="text-xs font-semibold text-yellow-600">CUR</span>
+              <input 
+                className="w-12 bg-transparent text-sm font-bold text-yellow-500 text-center outline-none"
+                value={currency}
+                onChange={e => setCurrency(e.target.value)}
+                placeholder="$"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                className="hidden" 
+                accept=".json" 
+                onChange={handleFileUpload}
+              />
+              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-400 hover:text-yellow-500 transition-colors" title="Import">
+                <Upload size={18} />
+              </button>
+              <button onClick={handleBackup} className="p-2 text-slate-400 hover:text-yellow-500 transition-colors" title="Backup">
+                <FileJson size={18} />
+              </button>
+              <button onClick={handleExport} className="p-2 text-slate-400 hover:text-yellow-500 transition-colors" title="Export CSV">
+                <Download size={18} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {alerts.length > 0 && (
+          <div className="mb-8 bg-neutral-900 border border-red-900/50 rounded-xl p-4 shadow-md">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-red-900/20 rounded-full border border-red-900/30">
+                  <AlertTriangle className="text-red-500 w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-red-500 text-lg">Low Stock Alert</h3>
+                  <p className="text-xs text-red-400/80">{alerts.length} items need attention</p>
+                </div>
+              </div>
+              <button onClick={handleNotify} className="flex items-center gap-2 px-4 py-2 bg-neutral-800 border border-neutral-700 rounded-lg text-slate-300 hover:bg-neutral-700 text-sm transition-colors">
+                <Mail size={16} /> Notify
+              </button>
+            </div>
+            
+            <div className="bg-black/20 rounded-lg border border-neutral-800 overflow-hidden">
+              <ul className="divide-y divide-neutral-800 max-h-60 overflow-y-auto">
+                {alerts.map(alert => (
+                  <li key={alert.id} className="p-3 flex items-center justify-between hover:bg-neutral-800/50">
+                    <div className="flex items-center gap-3">
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-200">{alert.productName}</p>
+                        <p className="text-xs text-slate-500 font-mono">SKU: {alert.sku}</p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-bold text-red-500 bg-red-950/30 px-2 py-0.5 rounded-full">
+                      {alert.currentQuantity} left
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'analytics' ? (
+          <Analytics products={products} currency={currency} />
+        ) : (
+          <>
+            <div className="flex flex-col sm:flex-row gap-4 mb-8 justify-between items-center">
+              <div className="relative w-full sm:w-96">
+                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-yellow-600" onClick={() => searchInputRef.current?.focus()}>
+                  <Search className="w-5 h-5" />
+                </div>
+                <input 
+                  ref={searchInputRef}
+                  type="text" 
+                  placeholder="Search products, SKUs..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-12 pr-4 py-3 bg-neutral-900 border border-neutral-800 rounded-xl focus:ring-2 focus:ring-yellow-600/50 outline-none text-slate-200"
+                />
+              </div>
+              <button 
+                onClick={() => { setEditingProduct(undefined); setIsProductFormOpen(true); }}
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-yellow-700 to-yellow-500 hover:from-yellow-600 hover:to-yellow-400 text-black rounded-xl font-bold shadow-lg transition-all"
+              >
+                <Plus size={20} /> Add Product
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {filteredProducts.map(product => (
+                <div key={product.id} className="bg-neutral-900 rounded-xl shadow-lg border border-neutral-800 overflow-hidden">
+                  <div className="p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-6 bg-gradient-to-r from-neutral-900 to-neutral-800/50">
+                    <img src={product.image} alt={product.name} className="w-32 h-32 rounded-lg object-cover border border-neutral-700 shadow-lg" />
+                    
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h3 className="text-xl font-bold text-slate-100">{product.name}</h3>
+                        <span className="px-2.5 py-0.5 rounded-full bg-neutral-800 border border-neutral-700 text-yellow-500 text-xs font-semibold uppercase">{product.category}</span>
+                      </div>
+                      <p className="text-slate-400 mb-4">{product.description}</p>
+                      <div className="flex flex-wrap items-center gap-4 text-sm text-slate-300">
+                        <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Base: <strong className="text-yellow-500">{currency}{product.basePrice}</strong></span>
+                        <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Stock: <strong>{product.subProducts.reduce((a,b) => a + b.quantity, 0)}</strong></span>
+                        <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Alert: <strong>{product.alertLimit}</strong></span>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => { setActiveParentId(product.id); setEditingSubProduct(undefined); setIsSubProductFormOpen(true); }}
+                        className="flex items-center gap-1.5 px-4 py-2 bg-neutral-800 border border-neutral-700 hover:border-yellow-600 text-slate-300 rounded-lg text-sm transition-all"
+                      >
+                        <Plus size={16} /> Variant
+                      </button>
+                      <button 
+                        onClick={() => { setEditingProduct(product); setIsProductFormOpen(true); }}
+                        className="p-2 text-slate-500 hover:text-yellow-500 hover:bg-neutral-800 rounded-lg"
+                      >
+                        <Edit size={18} />
+                      </button>
+                      <button 
+                        onClick={(e) => deleteProduct(product.id, e)}
+                        className="p-2 text-slate-500 hover:text-red-500 hover:bg-neutral-800 rounded-lg"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                      <button onClick={() => toggleExpand(product.id)} className="p-2 text-slate-500 hover:text-slate-300 rounded-lg">
+                        {expandedProducts.has(product.id) ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {expandedProducts.has(product.id) && (
+                    <div className="border-t border-neutral-800 overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-neutral-950 text-yellow-600/80 text-xs uppercase">
+                          <tr>
+                            <th className="px-6 py-4">Name</th>
+                            <th className="px-6 py-4">Description</th>
+                            <th className="px-6 py-4">Color</th>
+                            <th className="px-6 py-4">SKU</th>
+                            <th className="px-6 py-4">Price</th>
+                            <th className="px-6 py-4">Stock</th>
+                            <th className="px-6 py-4">Details</th>
+                            <th className="px-6 py-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-800">
+                          {product.subProducts.length === 0 ? (
+                            <tr>
+                              <td colSpan={8} className="px-6 py-8 text-center text-slate-600 italic">No variants yet</td>
+                            </tr>
+                          ) : (
+                            product.subProducts.map(sp => (
+                              <tr key={sp.id} className="hover:bg-neutral-800/30 group">
+                                <td className="px-6 py-4">
+                                  <input 
+                                    type="text"
+                                    value={sp.name || ''}
+                                    placeholder={product.name}
+                                    onChange={(e) => updateSubProductField(product.id, sp.id, 'name', e.target.value)}
+                                    className="w-full bg-transparent border-b border-transparent hover:border-neutral-600 focus:border-yellow-600 outline-none text-slate-300"
+                                  />
+                                </td>
+                                <td className="px-6 py-4">
+                                  <input 
+                                    type="text"
+                                    value={sp.description || ''}
+                                    placeholder={product.description}
+                                    onChange={(e) => updateSubProductField(product.id, sp.id, 'description', e.target.value)}
+                                    className="w-full bg-transparent border-b border-transparent hover:border-neutral-600 focus:border-yellow-600 outline-none text-slate-500 text-xs"
+                                  />
+                                </td>
+                                <td className="px-6 py-4">
+                                  <div className="flex items-center gap-2">
+                                    <img src={sp.image} alt={sp.color} className="w-12 h-12 rounded object-cover border border-neutral-700" />
+                                    <span className="text-slate-300">{sp.color}</span>
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4 text-slate-500 font-mono text-xs">{sp.sku}</td>
+                                <td className="px-6 py-4 text-yellow-500">{currency}{sp.price}</td>
+                                <td className="px-6 py-4">
+                                  <span className={`px-2 py-0.5 rounded text-xs font-bold ${sp.quantity <= product.alertLimit ? 'bg-red-900/30 text-red-500' : 'bg-green-900/30 text-green-500'}`}>
+                                    {sp.quantity}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 text-slate-500 text-xs">{sp.weight}, {sp.dimensions}</td>
+                                <td className="px-6 py-4 text-right">
+                                  <div className="flex justify-end gap-3">
+                                    <button onClick={() => { setActiveParentId(product.id); setEditingSubProduct(sp); setIsSubProductFormOpen(true); }} className="text-yellow-600 hover:text-yellow-400 text-xs uppercase">Edit</button>
+                                    <button onClick={() => deleteSubProduct(product.id, sp.id)} className="text-red-700 hover:text-red-500 text-xs uppercase">Delete</button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </main>
+
+      <div className="fixed bottom-8 right-8 flex flex-col items-end gap-3 z-40">
+        {voiceStatus && (
+          <div className="bg-neutral-800 text-yellow-500 border border-yellow-600/30 text-xs px-4 py-2 rounded-lg shadow-xl animate-pulse">
+            {voiceStatus}
+          </div>
+        )}
+        <button 
+          onClick={toggleListening}
+          className={`p-5 rounded-full shadow-2xl transition-all border-4 ${isListening ? 'bg-red-600 border-red-400 animate-pulse' : 'bg-neutral-900 border-yellow-600'}`}
+        >
+          {isListening ? <MicOff className="text-white w-6 h-6" /> : <Mic className="text-yellow-500 w-6 h-6" />}
+        </button>
+      </div>
+
+      <ProductForm 
+        isOpen={isProductFormOpen} 
+        onClose={() => setIsProductFormOpen(false)} 
+        onSave={saveProduct}
+        initialData={editingProduct}
+        currency={currency}
+      />
+
+      <SubProductForm
+        isOpen={isSubProductFormOpen}
+        onClose={() => setIsSubProductFormOpen(false)}
+        onSave={saveSubProduct}
+        initialData={editingSubProduct}
+        parentName={products.find(p => p.id === activeParentId)?.name || 'Product'}
+        currency={currency}
+      />
+    </div>
+  );
+};
+
+export default App;
