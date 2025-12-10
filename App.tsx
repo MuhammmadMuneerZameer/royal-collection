@@ -479,12 +479,113 @@ const Analytics: React.FC<{ products: Product[]; currency: string }> = ({ produc
   );
 };
 
+// --- Bulk Add Component ---
+const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Product[]>>; currency: string }> = ({ onApply, currency }) => {
+  const [input, setInput] = useState('');
+  const [message, setMessage] = useState<string>('Paste rows like: Product,Category,SKU,Color,Price(USD),Quantity');
+
+  const handleApply = () => {
+    if (!input.trim()) return;
+    const lines = input.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+
+    let processed = 0;
+    onApply(prev => {
+      let productsCopy = [...prev];
+      for (const raw of lines) {
+        const parts = raw.split(',').map(p => p.trim());
+        if (parts.length < 5) continue;
+        const [productName, category, skuRaw, color, priceRaw, quantityRaw] = parts;
+        const price = Number(priceRaw ?? '0') || 0;
+        const quantity = Number(quantityRaw ?? '0') || 0;
+        if (!productName || (!skuRaw && !color)) continue;
+
+        processed++;
+        const nameLower = productName.toLowerCase();
+        let product = productsCopy.find(p => p.name.toLowerCase() === nameLower);
+        if (!product) {
+          product = {
+            id: crypto.randomUUID(),
+            name: productName,
+            category: category || 'General',
+            description: '',
+            basePrice: price,
+            image: 'https://images.unsplash.com/photo-1556228453-efd6c1ff04f6?auto=format&fit=crop&q=80&w=400',
+            remarks: '',
+            alertLimit: 10,
+            subProducts: []
+          };
+          productsCopy.push(product);
+        }
+
+        const sku = skuRaw || `SKU-${Math.floor(Math.random() * 100000)}`;
+        const colorSafe = color || 'Default';
+        const existingSub = product.subProducts.find(sp => sp.sku.toLowerCase() === sku.toLowerCase());
+        if (existingSub) {
+          existingSub.price = price;
+          existingSub.quantity = quantity;
+          existingSub.color = colorSafe;
+        } else {
+          product.subProducts.push({
+            id: crypto.randomUUID(),
+            sku,
+            name: '',
+            description: '',
+            color: colorSafe,
+            price,
+            quantity,
+            weight: '0.5kg',
+            dimensions: '10x10x2cm',
+            image: product.image,
+            remarks: ''
+          });
+        }
+      }
+      return productsCopy;
+    });
+
+    setMessage(`Processed ${processed} row(s).`);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-neutral-900 rounded-xl shadow-lg border border-neutral-800 p-6">
+        <h2 className="text-2xl font-bold text-yellow-500 mb-4">Bulk Add Inventory</h2>
+        <p className="text-sm text-slate-400 mb-3">Enter one item per line in this format:</p>
+        <div className="font-mono text-xs bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-slate-300 mb-4">
+          Product Name, Category, SKU, Color/Variant, Price (USD), Quantity
+          <br />
+          Modern Wooden Desk, Furniture, DESK-001, Oak, 300, 5
+        </div>
+        <textarea
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          rows={10}
+          className="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-sm text-slate-200 focus:ring-2 focus:ring-yellow-600 outline-none"
+          placeholder="Modern Wooden Desk, Furniture, DESK-001, Oak, 300, 5"
+        />
+        <div className="flex items-center justify-between mt-4">
+          <p className="text-xs text-slate-500">Stored prices are treated as USD and will be shown in {currency} using conversion rates.</p>
+          <button
+            onClick={handleApply}
+            className="px-6 py-2 bg-gradient-to-r from-yellow-700 to-yellow-500 hover:from-yellow-600 hover:to-yellow-400 text-black rounded-lg font-bold shadow-lg text-sm"
+          >
+            Apply Bulk Changes
+          </button>
+        </div>
+        <p className="text-xs text-slate-400 mt-2">{message}</p>
+      </div>
+    </div>
+  );
+};
+
 // --- Main App ---
 const App: React.FC = () => {
   const [currency, setCurrency] = useState(() => localStorage.getItem(CURRENCY_KEY) || '$');
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'inventory' | 'analytics'>('inventory');
+  const [activeTab, setActiveTab] = useState<'inventory' | 'analytics' | 'bulk'>('inventory');
+
   const [alerts, setAlerts] = useState<Alert[]>([]);
   
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
@@ -518,7 +619,7 @@ const App: React.FC = () => {
       const data = action.data || {};
       const productName = action.productName || data.name || 'Untitled Product';
       setProducts(prev => {
-        const existing = prev.find(p => p.name.toLowerCase() === productName.toLowerCase());
+        const existing = prev.some(p => p.name.toLowerCase() === productName.toLowerCase());
         const baseProduct: Product = existing || {
           id: crypto.randomUUID(),
           name: productName,
@@ -903,6 +1004,12 @@ const App: React.FC = () => {
               >
                 Analytics
               </button>
+              <button 
+                onClick={() => setActiveTab('bulk')}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === 'bulk' ? 'bg-yellow-600 text-black' : 'text-slate-400 hover:text-yellow-500'}`}
+              >
+                Bulk Add
+              </button>
             </nav>
 
             <div className="flex items-center gap-2 bg-neutral-800 rounded-lg p-1 px-2 border border-neutral-700">
@@ -982,6 +1089,8 @@ const App: React.FC = () => {
 
         {activeTab === 'analytics' ? (
           <Analytics products={products} currency={currency} />
+        ) : activeTab === 'bulk' ? (
+          <BulkAddSection onApply={setProducts} currency={currency} />
         ) : (
           <>
             <div className="flex flex-col sm:flex-row gap-4 mb-8 justify-between items-center">
