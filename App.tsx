@@ -105,13 +105,7 @@ declare global {
 // --- Storage Keys ---
 const STORAGE_KEY = 'royal-inventory-data';
 const CURRENCY_KEY = 'royal-inventory-currency';
-
-const CURRENCY_RATES: Record<string, number> = {
-  USD: 1,
-  PKR: 280.35,
-  AED: 3.67,
-  EUR: 0.86
-};
+const CURRENCYFREAKS_API_KEY = import.meta.env.VITE_CURRENCYFREAKS_API_KEY as string;
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: '$',
@@ -120,14 +114,14 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   EUR: '€'
 };
 
-const convertFromUSD = (amountUSD: number, currency: string) => {
-  const rate = CURRENCY_RATES[currency] ?? 1;
+const convertFromUSD = (amountUSD: number, currency: string, rates: Record<string, number>) => {
+  const rate = rates[currency] ?? 1;
   return amountUSD * rate;
 };
 
-const formatPrice = (amountUSD: number, currency: string) => {
+const formatPrice = (amountUSD: number, currency: string, rates: Record<string, number>) => {
   const symbol = CURRENCY_SYMBOLS[currency] ?? currency;
-  const converted = convertFromUSD(amountUSD, currency);
+  const converted = convertFromUSD(amountUSD, currency, rates);
   return `${symbol}${converted.toFixed(2)}`;
 };
 
@@ -396,6 +390,33 @@ const SubProductForm: React.FC<{
 const Analytics: React.FC<{ products: Product[]; currency: string }> = ({ products, currency }) => {
   const COLORS = ['#d97706', '#b45309', '#f59e0b', '#78350f', '#fbbf24', '#525252'];
 
+  const [currencyRates, setCurrencyRates] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const fetchRates = async () => {
+      try {
+        const response = await fetch(
+          `https://api.currencyfreaks.com/latest?apikey=${CURRENCYFREAKS_API_KEY}&symbols=USD,PKR,AED,EUR`
+        );
+        const data = await response.json();
+        if (data && data.rates) {
+          const parsed: Record<string, number> = {};
+          Object.keys(data.rates).forEach(code => {
+            const value = Number(data.rates[code]);
+            if (!Number.isNaN(value)) {
+              parsed[code] = value;
+            }
+          });
+          setCurrencyRates(parsed);
+        }
+      } catch (error) {
+        console.error('Failed to fetch currency rates in Analytics', error);
+      }
+    };
+
+    fetchRates();
+  }, []);
+
   const categoryData = products.reduce((acc, product) => {
     const totalStock = product.subProducts.reduce((sum, sp) => sum + sp.quantity, 0);
     const existing = acc.find(c => c.name === product.category);
@@ -414,7 +435,10 @@ const Analytics: React.FC<{ products: Product[]; currency: string }> = ({ produc
 
   const valueData = products.map(p => ({
     name: p.name,
-    value: p.subProducts.reduce((sum, sp) => sum + convertFromUSD(sp.quantity * sp.price, currency), 0)
+    value: p.subProducts.reduce(
+      (sum, sp) => sum + convertFromUSD(sp.quantity * sp.price, currency, currencyRates),
+      0
+    )
   }));
 
   return (
@@ -568,7 +592,7 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
           <p className="text-xs text-slate-500">Stored prices are treated as USD and will be shown in {currency} using conversion rates.</p>
           <button
             onClick={handleApply}
-            className="px-6 py-2 bg-gradient-to-r from-yellow-700 to-yellow-500 hover:from-yellow-600 hover:to-yellow-400 text-black rounded-lg font-bold shadow-lg text-sm"
+            className="px-6 py-2 bg-gradient-to-r from-yellow-700 to-yellow-500 hover:from-yellow-600 hover:to-yellow-400 text-black rounded-lg font-bold shadow-lg transition-all"
           >
             Apply Bulk Changes
           </button>
@@ -581,7 +605,9 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
 
 // --- Main App ---
 const App: React.FC = () => {
-  const [currency, setCurrency] = useState(() => localStorage.getItem(CURRENCY_KEY) || '$');
+  const [currency, setCurrency] = useState(() => localStorage.getItem(CURRENCY_KEY) || 'PKR');
+  const [currencyRates, setCurrencyRates] = useState<Record<string, number>>({});
+
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'inventory' | 'analytics' | 'bulk'>('inventory');
@@ -597,10 +623,35 @@ const App: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<string>('');
-  
+
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const fetchRates = async () => {
+      try {
+        const response = await fetch(
+          `https://api.currencyfreaks.com/latest?apikey=${CURRENCYFREAKS_API_KEY}&symbols=USD,PKR,AED,EUR`
+        );
+        const data = await response.json();
+        if (data && data.rates) {
+          const parsed: Record<string, number> = {};
+          Object.keys(data.rates).forEach(code => {
+            const value = Number(data.rates[code]);
+            if (!Number.isNaN(value)) {
+              parsed[code] = value;
+            }
+          });
+          setCurrencyRates(parsed);
+        }
+      } catch (error) {
+        console.error('Failed to fetch currency rates in App', error);
+      }
+    };
+
+    fetchRates();
+  }, []);
 
   const buildInventoryContextSummary = () => {
     if (products.length === 0) return 'No products in inventory yet.';
@@ -1128,7 +1179,7 @@ const App: React.FC = () => {
                       </div>
                       <p className="text-slate-400 mb-4">{product.description}</p>
                       <div className="flex flex-wrap items-center gap-4 text-sm text-slate-300">
-                        <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Base: <strong className="text-yellow-500">{formatPrice(product.basePrice, currency)}</strong></span>
+                        <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Base: <strong className="text-yellow-500">{formatPrice(product.basePrice, currency, currencyRates)}</strong></span>
                         <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Stock: <strong>{product.subProducts.reduce((a,b) => a + b.quantity, 0)}</strong></span>
                         <span className="bg-black/30 px-3 py-1 rounded border border-neutral-800">Alert: <strong>{product.alertLimit}</strong></span>
                       </div>
@@ -1207,7 +1258,7 @@ const App: React.FC = () => {
                                   </div>
                                 </td>
                                 <td className="px-6 py-4 text-slate-500 font-mono text-xs">{sp.sku}</td>
-                                <td className="px-6 py-4 text-yellow-500">{formatPrice(sp.price, currency)}</td>
+                                <td className="px-6 py-4 text-yellow-500">{formatPrice(sp.price, currency, currencyRates)}</td>
                                 <td className="px-6 py-4">
                                   <span className={`px-2 py-0.5 rounded text-xs font-bold ${sp.quantity <= product.alertLimit ? 'bg-red-900/30 text-red-500' : 'bg-green-900/30 text-green-500'}`}>
                                     {sp.quantity}
