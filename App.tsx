@@ -187,6 +187,7 @@ const ProductForm: React.FC<{
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSave(formData);
+    alert(initialData ? 'Product updated successfully.' : 'Product added successfully.');
     onClose();
   };
 
@@ -308,6 +309,7 @@ const SubProductForm: React.FC<{
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSave(formData);
+    alert(initialData ? 'Variant updated successfully.' : 'Variant added successfully.');
     onClose();
   };
 
@@ -519,6 +521,7 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
       for (const raw of lines) {
         const parts = raw.split(',').map(p => p.trim());
         if (parts.length < 5) continue;
+
         const [productName, category, skuRaw, color, priceRaw, quantityRaw] = parts;
         const price = Number(priceRaw ?? '0') || 0;
         const quantity = Number(quantityRaw ?? '0') || 0;
@@ -568,7 +571,13 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
       return productsCopy;
     });
 
-    setMessage(`Processed ${processed} row(s).`);
+    if (processed > 0) {
+      setMessage(`Processed ${processed} row(s).`);
+      setInput('');
+      alert(`Successfully processed ${processed} row(s).`);
+    } else {
+      setMessage('No valid rows found. Please check your input.');
+    }
   };
 
   return (

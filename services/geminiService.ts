@@ -78,11 +78,19 @@ export const processInventoryCommand = async (
     
     return JSON.parse(text) as InventoryAction;
 
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("AI Processing Error:", error);
+
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+        ? error
+        : JSON.stringify(error);
+
     return {
       type: ActionType.UNKNOWN,
-      reason: "Failed to process command. Please try again."
+      reason: `Failed to process command: ${errorMessage}`
     };
   }
 };
