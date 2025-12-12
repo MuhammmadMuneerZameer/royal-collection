@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useAuth } from './src/AuthContext';
+import { signOut } from './src/firebase';
 
 import { 
   Plus, Search, Mic, Download, 
-  ChevronDown, ChevronRight, AlertTriangle, Edit, Trash2, MicOff, Mail, Save, Crown, FileJson, RefreshCw, Upload, Loader2,
+  ChevronDown, ChevronRight, AlertTriangle, Edit, Trash2, MicOff, Mail, Save, Crown, FileJson, RefreshCw, Upload, Loader2, LogOut,
   X, Image as ImageIcon
 } from 'lucide-react';
 import {
@@ -614,6 +616,7 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
 
 // --- Main App ---
 const App: React.FC = () => {
+  const { user, logout } = useAuth();
   const [currency, setCurrency] = useState(() => localStorage.getItem(CURRENCY_KEY) || 'PKR');
   const [currencyRates, setCurrencyRates] = useState<Record<string, number>>({});
 
@@ -679,7 +682,7 @@ const App: React.FC = () => {
       const data = action.data || {};
       const productName = action.productName || data.name || 'Untitled Product';
       setProducts(prev => {
-        const existing = prev.some(p => p.name.toLowerCase() === productName.toLowerCase());
+        const existing = prev.find(p => p.name.toLowerCase() === productName.toLowerCase());
         const baseProduct: Product = existing || {
           id: crypto.randomUUID(),
           name: productName,
@@ -874,6 +877,15 @@ const App: React.FC = () => {
       recognitionRef.current?.stop();
     } else {
       recognitionRef.current?.start();
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+      logout();
+    } catch (error) {
+      console.error('Error signing out:', error);
     }
   };
 
@@ -1087,6 +1099,48 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2">
+              {user ? (
+                <div className="relative group">
+                  <button className="flex items-center gap-2 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg text-slate-300 hover:text-yellow-500 text-sm transition-colors">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-400 to-yellow-700 flex items-center justify-center">
+                      <span className="text-black font-bold text-sm">
+                        {(user.displayName || user.email || 'User').charAt(0).toUpperCase()}
+                      </span>
+                    </div>
+                    <span className="hidden sm:inline">
+                      {user.displayName || user.email?.split('@')[0] || 'User'}
+                    </span>
+                    <ChevronDown size={16} />
+                  </button>
+                  
+                  {/* Dropdown Menu */}
+                  <div className="absolute right-0 mt-2 w-48 bg-neutral-800 border border-neutral-700 rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+                    <div className="p-3 border-b border-neutral-700">
+                      <p className="text-sm font-medium text-slate-200 truncate">
+                        {user.displayName || 'User'}
+                      </p>
+                      <p className="text-xs text-slate-500 truncate">
+                        {user.email}
+                      </p>
+                    </div>
+                    <button 
+                      onClick={handleLogout}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-slate-300 hover:bg-neutral-700 hover:text-red-400 transition-colors"
+                    >
+                      <LogOut size={16} />
+                      Sign Out
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button 
+                  onClick={() => window.location.reload()}
+                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-yellow-700 to-yellow-500 hover:from-yellow-600 hover:to-yellow-400 text-black rounded-lg font-medium shadow-lg transition-all text-sm"
+                >
+                  <Crown size={16} />
+                  Sign In
+                </button>
+              )}
               <input 
                 type="file" 
                 ref={fileInputRef} 
