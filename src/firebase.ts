@@ -9,6 +9,21 @@ import {
   fetchSignInMethodsForEmail,
   User
 } from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  getDoc, 
+  getDocs, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot,
+  Timestamp
+} from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyCScNlP5ACv1YFgWrgF8yJnNtUU2qS1kIU",
@@ -21,6 +36,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+export const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
 
 export const signInWithGoogle = async () => {

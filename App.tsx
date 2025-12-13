@@ -1,6 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from './src/AuthContext';
 import { signOut } from './src/firebase';
+import { 
+  createProduct as createProductInFirestore, 
+  getProducts, 
+  updateProduct as updateProductInFirestore, 
+  deleteProduct as deleteProductFromFirestore, 
+  listenToProducts,
+  addVariantToProduct,
+  updateVariantInProduct,
+  deleteVariantFromProduct,
+  updateVariantQuantity,
+  searchProducts as searchProductsFirestore
+} from './src/firestoreService';
 
 import { 
   Plus, Search, Mic, Download, 
@@ -105,7 +117,6 @@ declare global {
 }
 
 // --- Storage Keys ---
-const STORAGE_KEY = 'royal-inventory-data';
 const CURRENCY_KEY = 'royal-inventory-currency';
 const CURRENCYFREAKS_API_KEY = import.meta.env.VITE_CURRENCYFREAKS_API_KEY as string;
 
@@ -508,18 +519,20 @@ const Analytics: React.FC<{ products: Product[]; currency: string }> = ({ produc
 };
 
 // --- Bulk Add Component ---
-const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Product[]>>; currency: string }> = ({ onApply, currency }) => {
+const BulkAddSection: React.FC<{ currency: string }> = ({ currency }) => {
   const [input, setInput] = useState('');
   const [message, setMessage] = useState<string>('Paste rows like: Product,Category,SKU,Color,Price(USD),Quantity');
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const handleApply = () => {
+  const handleApply = async () => {
     if (!input.trim()) return;
     const lines = input.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) return;
 
     let processed = 0;
-    onApply(prev => {
-      let productsCopy = [...prev];
+    setIsProcessing(true);
+    
+    try {
       for (const raw of lines) {
         const parts = raw.split(',').map(p => p.trim());
         if (parts.length < 5) continue;
@@ -530,10 +543,15 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
         if (!productName || (!skuRaw && !color)) continue;
 
         processed++;
+        
+        // Check if product exists
+        const existingProducts = await getProducts();
         const nameLower = productName.toLowerCase();
-        let product = productsCopy.find(p => p.name.toLowerCase() === nameLower);
+        let product = existingProducts.find(p => p.name.toLowerCase() === nameLower);
+        
         if (!product) {
-          product = {
+          // Create new product
+          const newProduct = {
             id: crypto.randomUUID(),
             name: productName,
             category: category || 'General',
@@ -544,18 +562,23 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
             alertLimit: 10,
             subProducts: []
           };
-          productsCopy.push(product);
+          product = await createProductInFirestore(newProduct);
         }
 
         const sku = skuRaw || `SKU-${Math.floor(Math.random() * 100000)}`;
         const colorSafe = color || 'Default';
         const existingSub = product.subProducts.find(sp => sp.sku.toLowerCase() === sku.toLowerCase());
+        
         if (existingSub) {
-          existingSub.price = price;
-          existingSub.quantity = quantity;
-          existingSub.color = colorSafe;
+          // Update existing variant
+          await updateVariantInProduct(product.id, existingSub.id, {
+            price,
+            quantity,
+            color: colorSafe
+          });
         } else {
-          product.subProducts.push({
+          // Add new variant
+          await addVariantToProduct(product.id, {
             id: crypto.randomUUID(),
             sku,
             name: '',
@@ -570,15 +593,19 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
           });
         }
       }
-      return productsCopy;
-    });
 
-    if (processed > 0) {
-      setMessage(`Processed ${processed} row(s).`);
-      setInput('');
-      alert(`Successfully processed ${processed} row(s).`);
-    } else {
-      setMessage('No valid rows found. Please check your input.');
+      if (processed > 0) {
+        setMessage(`Processed ${processed} row(s).`);
+        setInput('');
+        alert(`Successfully processed ${processed} row(s).`);
+      } else {
+        setMessage('No valid rows found. Please check your input.');
+      }
+    } catch (error) {
+      console.error('Error processing bulk add:', error);
+      alert('Failed to process bulk add. Please try again.');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -603,9 +630,17 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
           <p className="text-xs text-slate-500">Stored prices are treated as USD and will be shown in {currency} using conversion rates.</p>
           <button
             onClick={handleApply}
-            className="px-6 py-2 bg-gradient-to-r from-yellow-700 to-yellow-500 hover:from-yellow-600 hover:to-yellow-400 text-black rounded-lg font-bold shadow-lg transition-all"
+            disabled={isProcessing}
+            className="px-6 py-2 bg-gradient-to-r from-yellow-700 to-yellow-500 hover:from-yellow-600 hover:to-yellow-400 disabled:from-neutral-700 disabled:to-neutral-600 text-black disabled:text-neutral-400 rounded-lg font-bold shadow-lg transition-all flex items-center gap-2"
           >
-            Apply Bulk Changes
+            {isProcessing ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Processing...
+              </>
+            ) : (
+              'Apply Bulk Changes'
+            )}
           </button>
         </div>
         <p className="text-xs text-slate-400 mt-2">{message}</p>
@@ -617,7 +652,7 @@ const BulkAddSection: React.FC<{ onApply: React.Dispatch<React.SetStateAction<Pr
 // --- Main App ---
 const App: React.FC = () => {
   const { user, logout } = useAuth();
-  const [currency, setCurrency] = useState(() => localStorage.getItem(CURRENCY_KEY) || 'PKR');
+  const [currency, setCurrency] = useState(() => localStorage.getItem('royal-inventory-currency') || 'PKR');
   const [currencyRates, setCurrencyRates] = useState<Record<string, number>>({});
 
   const [products, setProducts] = useState<Product[]>([]);
@@ -675,14 +710,18 @@ const App: React.FC = () => {
     }).join(' | ');
   };
 
-  const applyInventoryAction = (action: any) => {
+  const applyInventoryAction = async (action: any) => {
     if (!action || !action.type) return;
 
     if (action.type === 'CREATE_PRODUCT') {
       const data = action.data || {};
       const productName = action.productName || data.name || 'Untitled Product';
-      setProducts(prev => {
-        const existing = prev.find(p => p.name.toLowerCase() === productName.toLowerCase());
+      
+      try {
+        // Check if product exists
+        const existingProducts = await getProducts();
+        const existing = existingProducts.find(p => p.name.toLowerCase() === productName.toLowerCase());
+        
         const baseProduct: Product = existing || {
           id: crypto.randomUUID(),
           name: productName,
@@ -692,7 +731,7 @@ const App: React.FC = () => {
           image: 'https://images.unsplash.com/photo-1556228453-efd6c1ff04f6?auto=format&fit=crop&q=80&w=400',
           remarks: data.remarks || '',
           alertLimit: typeof data.alertLimit === 'number' ? data.alertLimit : 10,
-          subProducts: existing ? existing.subProducts : []
+          subProducts: []
         };
 
         let subProducts = baseProduct.subProducts;
@@ -715,35 +754,52 @@ const App: React.FC = () => {
 
         const updated = { ...baseProduct, subProducts };
         if (existing) {
-          return prev.map(p => p.id === existing.id ? updated : p);
+          await updateProductInFirestore(existing.id, updated);
+        } else {
+          await createProductInFirestore(updated);
         }
-        return [...prev, updated];
-      });
-      if (action.reason) alert(action.reason);
+        
+        if (action.reason) alert(action.reason);
+      } catch (error) {
+        console.error('Error creating product via AI:', error);
+        alert('Failed to create product. Please try again.');
+      }
       return;
     }
 
     if (action.type === 'ADD_SUB_PRODUCT') {
       const data = action.data || {};
       const productName = (action.productName || '').toLowerCase();
-      setProducts(prev => prev.map(p => {
-        if (p.name.toLowerCase() !== productName) return p;
+      
+      try {
+        const existingProducts = await getProducts();
+        const product = existingProducts.find(p => p.name.toLowerCase() === productName);
+        
+        if (!product) {
+          alert('Product not found. Please create the product first.');
+          return;
+        }
+        
         const newSub: SubProduct = {
           id: crypto.randomUUID(),
           sku: data.sku || action.sku || `SKU-${Math.floor(Math.random() * 10000)}`,
           name: data.name,
           description: data.description,
           color: data.color || action.color || 'Default',
-          price: typeof data.price === 'number' ? data.price : p.basePrice,
+          price: typeof data.price === 'number' ? data.price : product.basePrice,
           quantity: typeof data.quantity === 'number' ? data.quantity : 0,
           weight: data.weight || '0.5kg',
           dimensions: data.dimensions || '10x10x2cm',
-          image: p.image,
+          image: product.image,
           remarks: data.remarks || ''
         };
-        return { ...p, subProducts: [...p.subProducts, newSub] };
-      }));
-      if (action.reason) alert(action.reason);
+        
+        await addVariantToProduct(product.id, newSub);
+        if (action.reason) alert(action.reason);
+      } catch (error) {
+        console.error('Error adding variant via AI:', error);
+        alert('Failed to add variant. Please try again.');
+      }
       return;
     }
 
@@ -754,24 +810,32 @@ const App: React.FC = () => {
       const targetProductName = action.productName ? String(action.productName).toLowerCase() : undefined;
       const targetColor = action.color ? String(action.color).toLowerCase() : undefined;
 
-      let matched = false;
-      setProducts(prev => prev.map(p => {
-        const matchesProduct = targetProductName && p.name.toLowerCase() === targetProductName;
-        const updatedSubs = p.subProducts.map(sp => {
-          const bySku = targetSku && sp.sku.toLowerCase() === targetSku;
-          const byProductAndColor = matchesProduct && targetColor && sp.color.toLowerCase().includes(targetColor);
-          if (bySku || byProductAndColor) {
+      try {
+        const existingProducts = await getProducts();
+        let matched = false;
+        
+        for (const product of existingProducts) {
+          const matchesProduct = targetProductName && product.name.toLowerCase() === targetProductName;
+          const matchingSubs = product.subProducts.filter(sp => {
+            const bySku = targetSku && sp.sku.toLowerCase() === targetSku;
+            const byProductAndColor = matchesProduct && targetColor && sp.color.toLowerCase().includes(targetColor);
+            return bySku || byProductAndColor;
+          });
+          
+          for (const sub of matchingSubs) {
             matched = true;
-            return { ...sp, quantity: Math.max(0, sp.quantity + change) };
+            await updateVariantQuantity(product.id, sub.id, Math.max(0, sub.quantity + change));
           }
-          return sp;
-        });
-        return { ...p, subProducts: updatedSubs };
-      }));
-      if (!matched) {
-        alert('AI could not find a matching item for this command.');
-      } else if (action.reason) {
-        alert(action.reason);
+        }
+        
+        if (!matched) {
+          alert('AI could not find a matching item for this command.');
+        } else if (action.reason) {
+          alert(action.reason);
+        }
+      } catch (error) {
+        console.error('Error updating stock via AI:', error);
+        alert('Failed to update stock. Please try again.');
       }
       return;
     }
@@ -781,26 +845,33 @@ const App: React.FC = () => {
     }
   };
 
-  // Load data
+  // Load data from Firestore
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
+    const loadProducts = async () => {
       try {
-        const parsed = JSON.parse(saved);
-        setProducts(parsed);
-      } catch (e) {
-        console.error('Failed to parse saved data');
+        setIsLoading(true);
+        const productsData = await getProducts();
+        setProducts(productsData);
+      } catch (error) {
+        console.error('Failed to load products from Firestore:', error);
+        alert('Failed to load products. Please check your connection.');
+      } finally {
+        setIsLoading(false);
       }
-    }
-    setIsLoading(false);
+    };
+
+    loadProducts();
   }, []);
 
-  // Save data
+  // Real-time sync with Firestore
   useEffect(() => {
-    if (!isLoading && products.length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
+    if (!isLoading) {
+      const unsubscribe = listenToProducts((updatedProducts) => {
+        setProducts(updatedProducts);
+      });
+      return () => unsubscribe();
     }
-  }, [products, isLoading]);
+  }, [isLoading]);
 
   // Update alerts
   useEffect(() => {
@@ -916,17 +987,24 @@ const App: React.FC = () => {
     link.click();
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const content = e.target?.result as string;
         const parsed = JSON.parse(content);
         if (Array.isArray(parsed)) {
-          setProducts(parsed);
+          // Restore each product to Firestore
+          for (const product of parsed) {
+            try {
+              await createProductInFirestore(product);
+            } catch (error) {
+              console.error('Error restoring product:', error);
+            }
+          }
           alert('Inventory restored successfully!');
         }
       } catch (err) {
@@ -956,59 +1034,69 @@ const App: React.FC = () => {
     setExpandedProducts(next);
   };
 
-  const saveProduct = (product: Product) => {
-    setProducts(prev => {
-      const exists = prev.some(p => p.id === product.id);
-      if (exists) {
-        return prev.map(p => p.id === product.id ? product : p);
+  const saveProduct = async (product: Product) => {
+    try {
+      if (products.some(p => p.id === product.id)) {
+        // Update existing product
+        await updateProductInFirestore(product.id, product);
       } else {
-        return [...prev, product];
+        // Create new product
+        await createProductInFirestore(product);
       }
-    });
-  };
-
-  const saveSubProduct = (sub: SubProduct) => {
-    if (!activeParentId) return;
-    setProducts(prev => prev.map(p => {
-      if (p.id === activeParentId) {
-        const exists = p.subProducts.some(s => s.id === sub.id);
-        const subs = exists 
-          ? p.subProducts.map(s => s.id === sub.id ? sub : s)
-          : [...p.subProducts, sub];
-        return { ...p, subProducts: subs };
-      }
-      return p;
-    }));
-  };
-
-  const deleteProduct = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (window.confirm("Delete this product?")) {
-      setProducts(prev => prev.filter(p => p.id !== id));
+    } catch (error) {
+      console.error('Error saving product:', error);
+      alert('Failed to save product. Please try again.');
     }
   };
 
-  const deleteSubProduct = (pId: string, sId: string) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id === pId) {
-        return { ...p, subProducts: p.subProducts.filter(s => s.id !== sId) };
+  const saveSubProduct = async (sub: SubProduct) => {
+    if (!activeParentId) return;
+    try {
+      const existingSub = products
+        .find(p => p.id === activeParentId)
+        ?.subProducts.find(s => s.id === sub.id);
+      
+      if (existingSub) {
+        // Update existing variant
+        await updateVariantInProduct(activeParentId, sub.id, sub);
+      } else {
+        // Add new variant
+        await addVariantToProduct(activeParentId, sub);
       }
-      return p;
-    }));
+    } catch (error) {
+      console.error('Error saving variant:', error);
+      alert('Failed to save variant. Please try again.');
+    }
   };
 
-  const updateSubProductField = (productId: string, subProductId: string, field: 'name' | 'description', value: string) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id === productId) {
-        return {
-          ...p,
-          subProducts: p.subProducts.map(sp => 
-            sp.id === subProductId ? { ...sp, [field]: value } : sp
-          )
-        };
+  const deleteProduct = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm("Delete this product?")) {
+      try {
+        await deleteProductFromFirestore(id);
+      } catch (error) {
+        console.error('Error deleting product:', error);
+        alert('Failed to delete product. Please try again.');
       }
-      return p;
-    }));
+    }
+  };
+
+  const deleteSubProduct = async (pId: string, sId: string) => {
+    try {
+      await deleteVariantFromProduct(pId, sId);
+    } catch (error) {
+      console.error('Error deleting variant:', error);
+      alert('Failed to delete variant. Please try again.');
+    }
+  };
+
+  const updateSubProductField = async (productId: string, subProductId: string, field: 'name' | 'description', value: string) => {
+    try {
+      await updateVariantInProduct(productId, subProductId, { [field]: value });
+    } catch (error) {
+      console.error('Error updating variant field:', error);
+      alert('Failed to update variant. Please try again.');
+    }
   };
 
   // Auto-expand when searching
@@ -1204,7 +1292,7 @@ const App: React.FC = () => {
         {activeTab === 'analytics' ? (
           <Analytics products={products} currency={currency} />
         ) : activeTab === 'bulk' ? (
-          <BulkAddSection onApply={setProducts} currency={currency} />
+          <BulkAddSection currency={currency} />
         ) : (
           <>
             <div className="flex flex-col sm:flex-row gap-4 mb-8 justify-between items-center">
