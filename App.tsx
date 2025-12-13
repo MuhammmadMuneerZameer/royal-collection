@@ -579,7 +579,6 @@ const BulkAddSection: React.FC<{ currency: string }> = ({ currency }) => {
         } else {
           // Add new variant
           await addVariantToProduct(product.id, {
-            id: crypto.randomUUID(),
             sku,
             name: '',
             description: '',
